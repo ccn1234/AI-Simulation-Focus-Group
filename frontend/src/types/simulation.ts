@@ -96,3 +96,23 @@ export type SimulationRequestPayload = {
   target_audience: string;
   ad_copy: string;
 };
+
+export type SimulationStatus = 'pending' | 'running' | 'succeeded' | 'failed';
+
+export type SimulationJobResponse = {
+  id: number;
+  status: SimulationStatus;
+};
+
+export type SimulationStatusResponse = SimulationJobResponse &
+  SimulationRequestPayload & {
+    personas: Persona[];
+    responses: PersonaResponse[];
+    product_analysis: ProductAnalysis | null;
+    summary_report: SummaryReport | null;
+    discussion_result: DiscussionResult | null;
+    created_at: string;
+    started_at: string | null;
+    completed_at: string | null;
+    error_message: string | null;
+  };

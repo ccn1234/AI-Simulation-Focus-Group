@@ -40,3 +40,6 @@ Thumbs.db
 # Local tool directories
 .claude/
 .codex/
+
+# Local deployment environment files
+**/.env.production

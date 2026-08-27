@@ -1,15 +1,22 @@
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import RedirectResponse
+import json
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-import json
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from app.config import (
+    FRONTEND_URL,
+    GOOGLE_CLIENT_ID,
+    GOOGLE_CLIENT_SECRET,
+    GOOGLE_REDIRECT_URI,
+)
 from app.db import get_db
 from app.models.simulation import User
 from app.schemas.auth import LoginRequest, SignupRequest, TokenResponse, UserResponse
 from app.security import create_access_token, get_current_user, hash_password, verify_password
-from app.config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -28,7 +35,7 @@ def google_callback(code: str, db: Session = Depends(get_db)):
     email = profile["email"].lower(); user = db.scalar(select(User).where(User.email == email))
     if not user:
         user = User(external_id=email, email=email, password_hash="GOOGLE_OAUTH", google_id=profile.get("sub"), auth_provider="google", role="USER"); db.add(user); db.commit(); db.refresh(user)
-    return RedirectResponse(f"http://localhost:5173/?access_token={create_access_token(user.id)}")
+    return RedirectResponse(f"{FRONTEND_URL}/?access_token={create_access_token(user.id)}")
 
 @router.post("/signup", response_model=UserResponse, status_code=201)
 def signup(request: SignupRequest, db: Session = Depends(get_db)):

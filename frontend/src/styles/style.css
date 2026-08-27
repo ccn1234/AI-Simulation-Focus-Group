@@ -121,10 +121,21 @@ button:disabled {
   gap: 24px;
 }
 
-.simulation-status { margin-bottom: 24px; }
-.simulation-status strong { color: #cfe0ff; }
-.simulation-status p { margin: 8px 0 14px; color: #aab5cc; line-height: 1.5; }
-.loading-bar { height: 8px; overflow: hidden; border-radius: 999px; background: #232b3b; }
+.simulation-status { margin-bottom: 24px; border-left: 4px solid #7b8ba5; }
+.simulation-status__meta { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.simulation-status__meta span { padding: 5px 9px; border-radius: 999px; background: #edf1f7; color: #596a84; font-size: 11px; font-weight: 800; }
+.simulation-status__meta small { color: #7b879a; font-size: 11px; font-weight: 700; }
+.simulation-status strong { color: #172033; }
+.simulation-status p { margin: 8px 0 14px; color: #68768d; line-height: 1.5; }
+.simulation-status--pending { border-left-color: #e3a52f; }
+.simulation-status--pending .simulation-status__meta span { background: #fff5dd; color: #9a6700; }
+.simulation-status--running { border-left-color: #4f8cff; }
+.simulation-status--running .simulation-status__meta span { background: #eaf1ff; color: #3567d8; }
+.simulation-status--succeeded { border-left-color: #2fb477; }
+.simulation-status--succeeded .simulation-status__meta span { background: #e8f8f0; color: #168653; }
+.simulation-status--failed { border-left-color: #e05265; }
+.simulation-status--failed .simulation-status__meta span { background: #ffebed; color: #c9364d; }
+.loading-bar { height: 8px; overflow: hidden; border-radius: 999px; background: #e8edf5; }
 .loading-bar span { display: block; width: 42%; height: 100%; border-radius: inherit; background: #4f8cff; animation: loading-slide 1.4s ease-in-out infinite; }
 @keyframes loading-slide { 0% { transform: translateX(-120%); } 100% { transform: translateX(260%); } }
 

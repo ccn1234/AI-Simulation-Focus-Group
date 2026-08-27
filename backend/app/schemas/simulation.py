@@ -1,4 +1,5 @@
-from typing import List
+from datetime import datetime
+from typing import List, Literal
 from pydantic import BaseModel, Field
 
 
@@ -7,6 +8,11 @@ class SimulationRequest(BaseModel):
     product_description: str = Field(..., min_length=1)
     target_audience: str = Field(..., min_length=1)
     ad_copy: str = Field(..., min_length=1)
+
+
+class SimulationJobResponse(BaseModel):
+    id: int
+    status: Literal["pending", "running", "succeeded", "failed"]
 
 
 class ProductAnalysis(BaseModel):
@@ -99,3 +105,21 @@ class SimulationResponse(BaseModel):
     responses: List[PersonaResponse]
     summary_report: SummaryReport
     discussion_result: DiscussionResult
+
+
+class SimulationStatusResponse(BaseModel):
+    id: int
+    product_name: str
+    product_description: str
+    target_audience: str
+    ad_copy: str
+    status: Literal["pending", "running", "succeeded", "failed"]
+    personas: List[Persona] = Field(default_factory=list)
+    responses: List[PersonaResponse] = Field(default_factory=list)
+    product_analysis: ProductAnalysis | None = None
+    summary_report: SummaryReport | None = None
+    discussion_result: DiscussionResult | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error_message: str | None = None

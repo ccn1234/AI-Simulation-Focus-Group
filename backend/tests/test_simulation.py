@@ -1,11 +1,21 @@
+import asyncio
+
+import pytest
+from sqlalchemy import select
+
 from app.models.simulation import Simulation
+from app.schemas.simulation import SimulationRequest, SimulationResponse
+from app.services.simulation_persistence_service import (
+    create_simulation_job,
+    process_simulation_job,
+)
 
 
 SIMULATION_PAYLOAD = {
-    "product_name": "테스트 앱",
-    "product_description": "테스트용 상품 설명입니다.",
-    "target_audience": "20대 직장인",
-    "ad_copy": "더 빠르고 편하게 사용하세요.",
+    "product_name": "Test product",
+    "product_description": "A product used to test the simulation API.",
+    "target_audience": "Office workers in their twenties",
+    "ad_copy": "Save time with this simple product.",
 }
 
 
@@ -28,25 +38,25 @@ def _headers(token):
 def _fake_result():
     return {
         "product_analysis": {
-            "core_value_proposition": "업무 시간을 줄여주는 앱",
-            "expected_purchase_motivations": ["시간 절약"],
-            "expected_resistance_factors": ["가격"],
-            "main_competitors_or_alternatives": ["수작업"],
-            "copy_strengths": ["명확한 메시지"],
-            "copy_weaknesses": ["구체적 사례 부족"],
-            "target_fit_summary": "직장인에게 적합합니다.",
+            "core_value_proposition": "Saves time for busy users.",
+            "expected_purchase_motivations": ["Time savings"],
+            "expected_resistance_factors": ["Price"],
+            "main_competitors_or_alternatives": ["Manual work"],
+            "copy_strengths": ["Clear message"],
+            "copy_weaknesses": ["Needs more detail"],
+            "target_fit_summary": "Suitable for office workers.",
         },
         "personas": [],
         "responses": [],
         "summary_report": {
             "overall_score": 7,
-            "key_insights": ["시간 절약이 핵심입니다."],
-            "key_positive_reactions": ["사용이 쉬워 보입니다."],
-            "key_negative_reactions": ["가격이 걱정됩니다."],
-            "strongest_target_segment": "20대 직장인",
-            "weakest_point": "가격 설명",
-            "improvement_priorities": ["가격 정책 보완"],
-            "recommended_next_actions": ["무료 체험 제공"],
+            "key_insights": ["Time savings are the main benefit."],
+            "key_positive_reactions": ["It looks easy to use."],
+            "key_negative_reactions": ["The price may be a concern."],
+            "strongest_target_segment": "Office workers in their twenties",
+            "weakest_point": "Price explanation",
+            "improvement_priorities": ["Clarify the pricing policy"],
+            "recommended_next_actions": ["Offer a free trial"],
         },
         "discussion_result": {
             "discussion_messages": [],
@@ -54,37 +64,36 @@ def _fake_result():
                 "main_conflicts": [],
                 "agreements": [],
                 "changed_opinions": [],
-                "final_group_consensus": "조건부 긍정",
+                "final_group_consensus": "Conditionally positive",
                 "purchase_intent_changes": [],
             },
         },
     }
 
 
-async def _fake_create_persisted_simulation(db, request, user_id):
-    item = Simulation(
-        user_id=user_id,
-        product_name=request.product_name,
-        product_description=request.product_description,
-        target_audience=request.target_audience,
-        ad_copy=request.ad_copy,
-        product_analysis=_fake_result()["product_analysis"],
-        status="succeeded",
-    )
-    db.add(item)
-    db.commit()
-    db.refresh(item)
-    return item, _fake_result()
+def _configure_successful_worker(monkeypatch, db_session_factory, observed_statuses=None):
+    import app.services.simulation_persistence_service as persistence_service
+
+    monkeypatch.setattr(persistence_service, "SessionLocal", db_session_factory)
+
+    async def fake_run_simulation(_request):
+        if observed_statuses is not None:
+            with db_session_factory() as db:
+                observed_statuses.append(
+                    db.scalar(select(Simulation.status).order_by(Simulation.id.desc()))
+                )
+        return SimulationResponse.model_validate(_fake_result())
+
+    monkeypatch.setattr(persistence_service, "run_simulation", fake_run_simulation)
 
 
-def test_create_and_list_simulation_without_calling_openai(client, monkeypatch):
-    import app.api.simulation as simulation_api
-
-    monkeypatch.setattr(
-        simulation_api,
-        "create_persisted_simulation",
-        _fake_create_persisted_simulation,
-    )
+def test_create_returns_job_and_background_worker_saves_result(
+    client,
+    db_session_factory,
+    monkeypatch,
+):
+    observed_statuses = []
+    _configure_successful_worker(monkeypatch, db_session_factory, observed_statuses)
     token = _login(client, "simulation@example.com")
 
     created = client.post(
@@ -93,56 +102,107 @@ def test_create_and_list_simulation_without_calling_openai(client, monkeypatch):
         headers=_headers(token),
     )
 
-    assert created.status_code == 200
-    assert created.json()["summary_report"]["overall_score"] == 7
+    assert created.status_code == 202
+    assert created.json()["status"] == "pending"
+    simulation_id = created.json()["id"]
+    assert observed_statuses == ["running"]
 
-    listed = client.get("/simulations", headers=_headers(token))
-    assert listed.status_code == 200
-    assert len(listed.json()) == 1
-    assert listed.json()[0]["product_name"] == "테스트 앱"
+    detail = client.get(f"/simulations/{simulation_id}", headers=_headers(token))
+    assert detail.status_code == 200
+    assert detail.json()["status"] == "succeeded"
+    assert detail.json()["summary_report"]["overall_score"] == 7
+    assert detail.json()["started_at"] is not None
+    assert detail.json()["completed_at"] is not None
 
 
-def test_simulation_detail_and_delete(client, monkeypatch):
-    import app.api.simulation as simulation_api
+def test_background_worker_marks_failed_job(db_session_factory, monkeypatch):
+    import app.services.simulation_persistence_service as persistence_service
 
-    monkeypatch.setattr(
-        simulation_api,
-        "create_persisted_simulation",
-        _fake_create_persisted_simulation,
-    )
+    request = SimulationRequest.model_validate(SIMULATION_PAYLOAD)
+    with db_session_factory() as db:
+        simulation = create_simulation_job(db, request)
+        simulation_id = simulation.id
+
+    monkeypatch.setattr(persistence_service, "SessionLocal", db_session_factory)
+
+    async def failing_run_simulation(_request):
+        raise RuntimeError("Fake AI failure")
+
+    monkeypatch.setattr(persistence_service, "run_simulation", failing_run_simulation)
+
+    with pytest.raises(RuntimeError, match="Fake AI failure"):
+        asyncio.run(process_simulation_job(simulation_id))
+
+    with db_session_factory() as db:
+        failed = db.get(Simulation, simulation_id)
+        assert failed.status == "failed"
+        assert failed.error_message == "Fake AI failure"
+        assert failed.started_at is not None
+        assert failed.completed_at is not None
+
+
+def test_simulation_detail_and_delete(client, db_session_factory, monkeypatch):
+    _configure_successful_worker(monkeypatch, db_session_factory)
     token = _login(client, "detail@example.com")
     created = client.post(
         "/simulations",
         json=SIMULATION_PAYLOAD,
         headers=_headers(token),
     )
-    simulation_id = created.json().get("id")
+    simulation_id = created.json()["id"]
 
-    # The endpoint response is intentionally checked by fetching the list,
-    # because the service response schema does not expose the persistence ID.
-    simulation_id = client.get("/simulations", headers=_headers(token)).json()[0]["id"]
     detail = client.get(f"/simulations/{simulation_id}", headers=_headers(token))
     assert detail.status_code == 200
-    assert detail.json()["product_name"] == "테스트 앱"
+    assert detail.json()["product_name"] == "Test product"
 
     deleted = client.delete(f"/simulations/{simulation_id}", headers=_headers(token))
     assert deleted.status_code == 204
     assert client.get(f"/simulations/{simulation_id}", headers=_headers(token)).status_code == 404
 
 
-def test_user_cannot_read_another_users_simulation(client, monkeypatch):
-    import app.api.simulation as simulation_api
-
-    monkeypatch.setattr(
-        simulation_api,
-        "create_persisted_simulation",
-        _fake_create_persisted_simulation,
+def test_retry_returns_new_job_id(client, db_session_factory, monkeypatch):
+    _configure_successful_worker(monkeypatch, db_session_factory)
+    token = _login(client, "retry@example.com")
+    created = client.post(
+        "/simulations",
+        json=SIMULATION_PAYLOAD,
+        headers=_headers(token),
     )
+    original_id = created.json()["id"]
+
+    with db_session_factory() as db:
+        original = db.get(Simulation, original_id)
+        original.status = "failed"
+        original.error_message = "Previous failure"
+        db.commit()
+
+    retried = client.post(
+        f"/simulations/{original_id}/retry",
+        headers=_headers(token),
+    )
+
+    assert retried.status_code == 202
+    assert retried.json()["status"] == "pending"
+    assert retried.json()["id"] != original_id
+
+
+def test_user_cannot_read_another_users_simulation(
+    client,
+    db_session_factory,
+    monkeypatch,
+):
+    _configure_successful_worker(monkeypatch, db_session_factory)
     first_token = _login(client, "owner@example.com")
     second_token = _login(client, "other@example.com")
-    client.post("/simulations", json=SIMULATION_PAYLOAD, headers=_headers(first_token))
-    simulation_id = client.get("/simulations", headers=_headers(first_token)).json()[0]["id"]
+    created = client.post(
+        "/simulations",
+        json=SIMULATION_PAYLOAD,
+        headers=_headers(first_token),
+    )
 
-    response = client.get(f"/simulations/{simulation_id}", headers=_headers(second_token))
+    response = client.get(
+        f"/simulations/{created.json()['id']}",
+        headers=_headers(second_token),
+    )
 
     assert response.status_code == 404

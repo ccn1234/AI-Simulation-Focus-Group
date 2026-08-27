@@ -10,7 +10,7 @@ from app.models import simulation  # noqa: F401 - registers all ORM models
 
 
 @pytest.fixture()
-def client():
+def db_session_factory():
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -19,8 +19,17 @@ def client():
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     Base.metadata.create_all(bind=engine)
 
+    yield TestingSessionLocal
+
+    Base.metadata.drop_all(bind=engine)
+    engine.dispose()
+
+
+@pytest.fixture()
+def client(db_session_factory):
+
     def override_get_db():
-        db = TestingSessionLocal()
+        db = db_session_factory()
         try:
             yield db
         finally:
@@ -31,5 +40,3 @@ def client():
         yield test_client
 
     app.dependency_overrides.clear()
-    Base.metadata.drop_all(bind=engine)
-    engine.dispose()

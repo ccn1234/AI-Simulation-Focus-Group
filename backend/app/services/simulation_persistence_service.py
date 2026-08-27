@@ -1,16 +1,19 @@
-from datetime import datetime
-
 from sqlalchemy.orm import Session
 
+from app.db import SessionLocal
 from app.repositories.simulation_repository import SimulationRepository
-from app.schemas.simulation import SimulationRequest
+from app.schemas.simulation import SimulationRequest, SimulationResponse
 from app.services.simulation_service import run_simulation
 from app.agents.base import end_usage_context, start_usage_context
 from app.config import AI_INPUT_COST_PER_1K, AI_OUTPUT_COST_PER_1K
-from app.models.simulation import AIUsageLog
+from app.models.simulation import AIUsageLog, Simulation
 
 
-async def create_persisted_simulation(db: Session, request: SimulationRequest, user_id: int | None = None):
+def create_simulation_job(
+    db: Session,
+    request: SimulationRequest,
+    user_id: int | None = None,
+) -> Simulation:
     repository = SimulationRepository(db)
     simulation = repository.create(
         product_name=request.product_name,
@@ -21,6 +24,24 @@ async def create_persisted_simulation(db: Session, request: SimulationRequest, u
         status="pending",
     )
     db.commit()
+    db.refresh(simulation)
+    return simulation
+
+
+async def process_simulation_job(simulation_id: int) -> SimulationResponse:
+    db = SessionLocal()
+    repository = SimulationRepository(db)
+    simulation = repository.get(simulation_id)
+    if simulation is None:
+        db.close()
+        raise ValueError(f"Simulation {simulation_id} not found")
+
+    request = SimulationRequest(
+        product_name=simulation.product_name,
+        product_description=simulation.product_description,
+        target_audience=simulation.target_audience,
+        ad_copy=simulation.ad_copy,
+    )
 
     try:
         repository.update_status(simulation, "running")
@@ -36,7 +57,7 @@ async def create_persisted_simulation(db: Session, request: SimulationRequest, u
                 db.add(AIUsageLog(simulation_id=simulation.id, estimated_cost=f"{cost:.8f}", **record))
         repository.save_result(simulation, result.model_dump())
         db.commit()
-        return simulation, result
+        return result
     except Exception as exc:
         db.rollback()
         simulation = repository.get(simulation.id)
@@ -44,3 +65,17 @@ async def create_persisted_simulation(db: Session, request: SimulationRequest, u
             repository.update_status(simulation, "failed", str(exc))
             db.commit()
         raise
+    finally:
+        db.close()
+
+
+async def create_persisted_simulation(
+    db: Session,
+    request: SimulationRequest,
+    user_id: int | None = None,
+):
+    """Temporary compatibility wrapper for synchronous API callers."""
+    simulation = create_simulation_job(db, request, user_id=user_id)
+    result = await process_simulation_job(simulation.id)
+    db.refresh(simulation)
+    return simulation, result

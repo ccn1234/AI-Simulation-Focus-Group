@@ -1,10 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from app.db import get_db
-from app.schemas.simulation import SimulationRequest, SimulationResponse
+from app.schemas.simulation import (
+    SimulationJobResponse,
+    SimulationRequest,
+    SimulationResponse,
+    SimulationStatusResponse,
+)
 from app.repositories.simulation_repository import SimulationRepository
-from app.services.simulation_persistence_service import create_persisted_simulation
+from app.services.simulation_persistence_service import (
+    create_simulation_job,
+    process_simulation_job,
+)
 from app.services.simulation_service import run_simulation
 from app.models.simulation import User
 from app.security import get_current_user
@@ -21,11 +29,17 @@ async def simulate(request: SimulationRequest, user: User = Depends(get_current_
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/simulations", response_model=SimulationResponse)
-async def create_simulation(request: SimulationRequest, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+@router.post("/simulations", response_model=SimulationJobResponse, status_code=202)
+async def create_simulation(
+    request: SimulationRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     try:
-        _, result = await create_persisted_simulation(db, request, user_id=user.id)
-        return result
+        simulation = create_simulation_job(db, request, user_id=user.id)
+        background_tasks.add_task(process_simulation_job, simulation.id)
+        return SimulationJobResponse(id=simulation.id, status=simulation.status)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -79,7 +93,7 @@ def compare_simulations(ids: list[int] = Query(..., min_length=2, max_length=3),
     ]
 
 
-@router.get("/simulations/{simulation_id}")
+@router.get("/simulations/{simulation_id}", response_model=SimulationStatusResponse)
 def get_simulation(simulation_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     simulation = SimulationRepository(db).get(simulation_id)
     if not simulation or simulation.user_id != user.id:
@@ -97,6 +111,7 @@ def get_simulation(simulation_id: int, db: Session = Depends(get_db), user: User
         "summary_report": simulation.summary_report.data if simulation.summary_report else None,
         "discussion_result": simulation.discussion.data if simulation.discussion else None,
         "created_at": simulation.created_at,
+        "started_at": simulation.started_at,
         "completed_at": simulation.completed_at,
         "error_message": simulation.error_message,
     }
@@ -141,13 +156,19 @@ def delete_simulation(simulation_id: int, db: Session = Depends(get_db), user: U
     db.delete(simulation)
     db.commit()
 
-@router.post("/simulations/{simulation_id}/retry", response_model=SimulationResponse)
-async def retry_simulation(simulation_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+@router.post("/simulations/{simulation_id}/retry", response_model=SimulationJobResponse, status_code=202)
+async def retry_simulation(
+    simulation_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     simulation = SimulationRepository(db).get(simulation_id)
     if not simulation or simulation.user_id != user.id:
         raise HTTPException(status_code=404, detail="Simulation not found")
     if simulation.status != "failed":
         raise HTTPException(status_code=400, detail="Only failed simulations can be retried")
     request = SimulationRequest(product_name=simulation.product_name, product_description=simulation.product_description, target_audience=simulation.target_audience, ad_copy=simulation.ad_copy)
-    _, result = await create_persisted_simulation(db, request, user_id=user.id)
-    return result
+    retry_job = create_simulation_job(db, request, user_id=user.id)
+    background_tasks.add_task(process_simulation_job, retry_job.id)
+    return SimulationJobResponse(id=retry_job.id, status=retry_job.status)
